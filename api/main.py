@@ -9,8 +9,8 @@ load_dotenv()
 
 app = FastAPI()
 
-REDIS_HOST = ${REDIS_HOST}
-REDIS_PORT = ${REDIS_PORT}
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 
 r = redis.Redis(
         host=REDIS_HOST,

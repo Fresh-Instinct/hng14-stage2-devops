@@ -1,22 +1,3 @@
--rw-r-- 1 midnight midnight    22 Apr 20 14:35 requirements.txt
-drwxrwxr-x 5 midnight midnight  4096 Apr 20 14:52 venv
-midnight@UbuntuDevOps:~/hng14-stage2-devops$ ls
-FIXES.md  README.md  api  docker  frontend  worker
-midnight@UbuntuDevOps:~/hng14-stage2-devops$ ls
-FIXES.md  README.md  api  docker  frontend  worker
-midnight@UbuntuDevOps:~/hng14-stage2-devops$ ls
-FIXES.md  README.md  api  docker  docker-compose.yml  frontend  worker
-midnight@UbuntuDevOps:~/hng14-stage2-devops$ ls api/
-Dockerfile.api  __pycache__  main.py  requirements.txt  venv
-midnight@UbuntuDevOps:~/hng14-stage2-devops$ ls frontend/
-Dockerfile.frontend  app.log       package-lock.json  views
-app.js               node_modules  package.json
-midnight@UbuntuDevOps:~/hng14-stage2-devops$ ls worker/
-Dockerfile.worker  requirements.txt  worker.py
-midnight@UbuntuDevOps:~/hng14-stage2-devops$ ls
-FIXES.md  README.md  api  docker-compose.yml  frontend  worker
-midnight@UbuntuDevOps:~/hng14-stage2-devops$ ls
-FIXES.md  README.md  api  docker-compose.yml  frontend  work
 name: Stage 2 CI/CD Pipeline
 
 on:
@@ -27,6 +8,7 @@ on:
 
 env:
   REGISTRY: localhost:5000
+  IMAGE_TAG: ${{ github.sha }}
 
 jobs:
 
@@ -37,22 +19,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Python lint
+      - name: Python Lint
         run: |
           pip install flake8
           flake8 api worker
 
-      - name: Node lint
+      - name: Node Lint
         run: |
           cd frontend
           npm install
           npx eslint .
 
-      - name: Docker lint (hadolint)
+      - name: Hadolint (Docker lint)
         run: |
-          docker run --rm -i hadolint/hadolint < api/Dockerfile || true
-          docker run --rm -i hadolint/hadolint < worker/Dockerfile || true
-          docker run --rm -i hadolint/hadolint < frontend/Dockerfile || true
+          docker run --rm -i hadolint/hadolint < api/Dockerfile
+          docker run --rm -i hadolint/hadolint < worker/Dockerfile
+          docker run --rm -i hadolint/hadolint < frontend/Dockerfile
 
 # -------------------- TEST --------------------
   test:
@@ -62,7 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install API deps
+      - name: Install API dependencies
         run: |
           cd api
           pip install -r requirements.txt
@@ -73,28 +55,52 @@ jobs:
           cd api
           pytest tests/ --cov=. --cov-report=xml
 
-      - name: Upload coverage
+      - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
           name: coverage
           path: api/coverage.xml
 
-# -------------------- BUILD --------------------
+# -------------------- BUILD (WITH CACHE + REGISTRY PUSH) --------------------
   build:
     runs-on: ubuntu-latest
     needs: test
 
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Enable BuildKit
-        run: echo "DOCKER_BUILDKIT=1" >> $GITHUB_ENV
+      - name: Login to local registry
+        run: echo "Using local registry at $REGISTRY"
 
-      - name: Build images (SHA + latest)
+      - name: Build & Push API
         run: |
-          docker build -t api:${{ github.sha }} -t api:latest api
-          docker build -t worker:${{ github.sha }} -t worker:latest worker
-          docker build -t frontend:${{ github.sha }} -t frontend:latest frontend
+          docker build -t api:${IMAGE_TAG} api
+          docker tag api:${IMAGE_TAG} $REGISTRY/api:${IMAGE_TAG}
+          docker tag api:${IMAGE_TAG} $REGISTRY/api:latest
+          docker push $REGISTRY/api:${IMAGE_TAG}
+          docker push $REGISTRY/api:latest
+
+      - name: Build & Push Worker
+        run: |
+          docker build -t worker:${IMAGE_TAG} worker
+          docker tag worker:${IMAGE_TAG} $REGISTRY/worker:${IMAGE_TAG}
+          docker tag worker:${IMAGE_TAG} $REGISTRY/worker:latest
+          docker push $REGISTRY/worker:${IMAGE_TAG}
+          docker push $REGISTRY/worker:latest
+
+      - name: Build & Push Frontend
+        run: |
+          docker build -t frontend:${IMAGE_TAG} frontend
+          docker tag frontend:${IMAGE_TAG} $REGISTRY/frontend:${IMAGE_TAG}
+          docker tag frontend:${IMAGE_TAG} $REGISTRY/frontend:latest
+          docker push $REGISTRY/frontend:${IMAGE_TAG}
+          docker push $REGISTRY/frontend:latest
 
 # -------------------- SECURITY --------------------
   security:
@@ -104,14 +110,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Trivy scan
+      - name: Trivy Scan (SARIF)
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: api:${{ github.sha }}
-          severity: CRITICAL
-          exit-code: 1
           format: sarif
           output: trivy.sarif
+          severity: CRITICAL
+          exit-code: 1
 
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@v3
@@ -132,20 +138,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Pull images from registry
+        run: |
+          docker pull $REGISTRY/api:$IMAGE_TAG
+          docker pull $REGISTRY/worker:$IMAGE_TAG
+          docker pull $REGISTRY/frontend:$IMAGE_TAG
+
       - name: Start stack
         run: docker-compose up -d --build
-
-      - name: Wait for API
-        run: sleep 20
 
       - name: Run integration test
         run: |
           JOB=$(curl -s -X POST http://localhost:8000/submit | jq -r .job_id)
           sleep 5
           STATUS=$(curl -s http://localhost:8000/status/$JOB | jq -r .status)
-          test "$STATUS" = "queued" || exit 1
+          test "$STATUS" = "queued"
 
-      - name: Cleanup always
+      - name: Always teardown
         if: always()
         run: docker-compose down -v
 
@@ -158,6 +167,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Rolling deploy
+      - name: Rolling deploy (registry-based)
         run: |
-          docker-compose up -d --build --no-deps api
+          docker pull $REGISTRY/api:$IMAGE_TAG
+          docker stop api || true
+          docker rm api || true
+          docker run -d --name api -p 8000:8000 $REGISTRY/api:$IMAGE_TAG

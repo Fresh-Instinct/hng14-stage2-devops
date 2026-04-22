@@ -13,15 +13,22 @@
 </head>
 <body>
   <h1>Job Processor Dashboard</h1>
-  <button onclick="submitJob()">Submit New Job</button>
+  <form onsubmit="handleSubmit(event)">
+    <button type="submit">Submit New Job</button>
+  </form>
   <div id="result"></div>
   <div id="jobs"></div>
 
   <script>
     const jobIds = [];
+    
+    async function handleSubmit(event){
+	    event.preventDefault();
+	    await submitJob();
+    }
 
     async function submitJob() {
-      const res = await fetch('/submit', { method: 'POST' });
+      const res = await fetch('/submit', {method:'POST'});
       const data = await res.json();
       document.getElementById('result').innerText = `Submitted: ${data.job_id}`;
       jobIds.push(data.job_id);

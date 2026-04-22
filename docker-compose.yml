@@ -1,0 +1,66 @@
+services:
+  redis:
+    image: redis:7
+    networks:
+      - app-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 5
+
+  api:
+    build: 
+      context: ./api
+      dockerfile: Dockerfile.api
+    env_file: ./api/.env
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - app-net
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build: 
+      context: ./worker
+      dockerfile: Dockerfile.worker
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - app-net
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+  frontend:
+    build: 
+      context: ./frontend
+      dockerfile: Dockerfile.frontend
+    env_file: ./api/.env
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - app-net
+    ports:
+      - "3000:3000"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+networks:
+  app-net:
